@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - PORT=${PORT}
+    ports:
+      - "${PORT}:${PORT}"
