@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Context-Aware Translator Prototyping</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-slate-950 min-h-screen font-sans antialiased text-slate-200 flex justify-center">
+
+  <div class="relative w-full max-w-md min-h-screen bg-black overflow-hidden flex flex-col shadow-2xl">
+
+    <div class="absolute inset-0 z-0 bg-slate-950">
+      <video id="webcam" autoplay playsinline class="w-full h-full object-cover"></video>
+      <canvas id="snapshot" class="hidden"></canvas>
+    </div>
+
+    <div class="absolute top-4 left-4 right-4 z-20 pt-safe">
+      <div id="status-badge" class="relative overflow-hidden bg-slate-950/80 backdrop-blur-md border border-slate-700/40 text-slate-300 rounded-full px-4 py-2 text-xs font-medium flex items-center justify-between shadow-lg">
+        
+        <div id="capture-progress" class="absolute top-0 left-0 h-full bg-indigo-500 w-0"></div>
+        
+        <div class="flex items-center space-x-2 relative z-10">
+          <span id="status-dot" class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+          <span id="status-text">システム待機中</span>
+        </div>
+        <span id="buffer-tag" class="text-indigo-400 font-semibold bg-indigo-500/10 px-2 py-0.5 rounded-md relative z-10">Buffered: 0F</span>
+        
+      </div>
+    </div>
+
+    <div class="mt-auto relative z-20 p-4 space-y-3 bg-gradient-to-t from-black via-black/90 to-transparent pb-8">
+      
+      <div class="bg-slate-900/75 backdrop-blur-sm rounded-xl p-2.5 border border-slate-800/60 text-xs">
+        <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+          <i class="fas fa-microphone text-rose-400 mr-1"></i>音声文字起こし（デモテキスト入力）
+        </label>
+        <input type="text" id="custom-context" class="w-full bg-slate-950 border border-slate-700/60 rounded-lg p-2 text-slate-200 text-xs focus:outline-none focus:border-indigo-500" placeholder="シミュレートする発話内容を自由に入力...">
+      </div>
+
+      <div class="bg-black/65 backdrop-blur-md rounded-2xl p-4 border border-white/10 text-white min-h-[130px] shadow-xl flex flex-col justify-between">
+        <div>
+          <div class="text-[11px] uppercase tracking-widest text-indigo-400 font-bold mb-1.5 flex items-center justify-between">
+            <span>翻訳・文脈解析出力</span>
+            <span id="loading-indicator" class="hidden text-amber-400 animate-pulse">
+              <i class="fas fa-spinner animate-spin mr-1"></i> 解析中...
+            </span>
+          </div>
+          <div class="space-y-3 mt-2">
+            <div>
+              <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">【直訳】</span>
+              <div id="literal-translation-text" class="text-xs font-medium leading-relaxed text-slate-300 bg-slate-950/50 p-2 rounded-lg border border-slate-800/40 min-h-[40px]">「翻訳開始」を押すと、ここに直訳が表示されます。</div>
+            </div>
+            <div>
+              <span class="text-[10px] font-bold text-teal-400 uppercase tracking-wider block mb-1">【意訳（シンプル）】</span>
+              <div id="context-translation-text" class="text-xs font-medium leading-relaxed text-slate-200 bg-slate-950/60 p-2 rounded-lg border border-teal-950/40 min-h-[40px]">「翻訳開始」を押すと、文脈を自然に反映したシンプルな翻訳が表示されます。</div>
+            </div>
+            <div>
+              <span class="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block mb-1">【説明・回答付き意訳】</span>
+              <div id="explained-translation-text" class="text-xs font-medium leading-relaxed text-slate-200 bg-slate-950/70 p-2 rounded-lg border border-indigo-950/40 min-h-[40px]">「翻訳開始」を押すと、状況説明や画像への回答を含んだ詳細な翻訳が表示されます。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <button id="start-btn" class="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold py-3 px-4 rounded-xl text-xs transition-all duration-200 flex items-center justify-center space-x-2 shadow-lg shadow-indigo-600/30 active:scale-[0.98]">
+            <i class="fas fa-bullseye text-sm"></i>
+            <span>翻訳開始</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('snapshot');
+    const startBtn = document.getElementById('start-btn');
+    const literalTranslationText = document.getElementById('literal-translation-text');
+    const contextTranslationText = document.getElementById('context-translation-text');
+    const explainedTranslationText = document.getElementById('explained-translation-text');
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const statusText = document.getElementById('status-text');
+    const statusDot = document.getElementById('status-dot');
+    const bufferTag = document.getElementById('buffer-tag');
+    const customContext = document.getElementById('custom-context');
+    const progressBar = document.getElementById('capture-progress');
+
+    let frameQueue = [];
+    const MAX_FRAMES = 10;
+    const CAPTURE_INTERVAL = 500; // 0.5秒サンプリングテスト用に変更
+
+    // カメラ初期化
+    async function initWebcam() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+        video.srcObject = stream;
+        startPeriodicCapture();
+      } catch (err) {
+        statusText.innerText = "カメラエラー";
+        statusDot.className = "h-2 w-2 rounded-full bg-red-500";
+        explainedTranslationText.innerText = "カメラへのアクセスを許可してください。";
+      }
+    }
+
+    // バックグラウンドでの時系列キャプチャ処理＆高精度プログレスバー同期
+    function startPeriodicCapture() {
+      let startTime = performance.now();
+
+      // 高速スパンでもブレないように毎フレーム線形補間するループ
+      function updateProgress(now) {
+        const elapsed = now - startTime;
+        const progress = Math.min((elapsed / CAPTURE_INTERVAL) * 100, 100);
+        progressBar.style.width = `${progress}%`;
+        requestAnimationFrame(updateProgress);
+      }
+      requestAnimationFrame(updateProgress);
+
+      setInterval(() => {
+        if (!video.videoWidth) {
+          startTime = performance.now();
+          return;
+        }
+
+        const context2d = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context2d.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        canvas.toBlob((blob) => {
+          if (blob) {
+            frameQueue.push(blob);
+            if (frameQueue.length > MAX_FRAMES) {
+              frameQueue.shift();
+            }
+            bufferTag.innerText = `Buffered: ${frameQueue.length}F`;
+          }
+        }, 'image/jpeg', 0.85);
+
+        // 基準時刻を現在に更新することでプログレスバーを0%へ滑らかにリセット
+        startTime = performance.now();
+      }, CAPTURE_INTERVAL);
+    }
+
+    // タイピングエフェクト
+    function runTypingEffect(text, element, speed = 40) {
+      let index = 0;
+      element.innerHTML = '';
+      function type() {
+        if (index < text.length) {
+          element.innerHTML += text.charAt(index);
+          index++;
+          setTimeout(type, speed);
+        }
+      }
+      type();
+    }
+
+    function captureCurrentFrame() {
+      return new Promise((resolve) => {
+        const context2d = canvas.getContext('2d');
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+        context2d.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.85);
+      });
+    }
+
+    // メイン一括送信 & API通信処理
+    startBtn.addEventListener('click', async () => {
+      startBtn.disabled = true;
+      loadingIndicator.classList.remove('hidden');
+      statusText.innerText = "時系列コンテキスト解析中...";
+      statusDot.className = "h-2 w-2 rounded-full bg-amber-500 animate-ping";
+      literalTranslationText.innerText = "解析中...";
+      contextTranslationText.innerText = "解析中...";
+      explainedTranslationText.innerText = "ストックされた複数枚の連続フレームと音声を精査しています...";
+      
+      let speechText = customContext.value;
+
+      try {
+        if (!video.videoWidth) {
+          loadingIndicator.classList.add('hidden');
+          statusText.innerText = "カメラエラー";
+          statusDot.className = "h-2 w-2 rounded-full bg-red-500";
+          literalTranslationText.innerText = "-";
+          contextTranslationText.innerText = "-";
+          explainedTranslationText.innerText = "カメラ映像が読み込まれていません。カメラの起動を待つか許可を確認してください。";
+          startBtn.disabled = false;
+          return;
+        }
+
+        if (frameQueue.length === 0) {
+          const instantBlob = await captureCurrentFrame();
+          if (instantBlob) frameQueue.push(instantBlob);
+        }
+
+        const formData = new FormData();
+        formData.append('text', speechText);
+
+        frameQueue.forEach((blob, index) => {
+          formData.append('images', blob, `frame_${index}.jpg`);
+        });
+
+        const response = await fetch('/api/translate', { method: 'POST', body: formData });
+        const data = await response.json();
+
+        loadingIndicator.classList.add('hidden');
+        statusText.innerText = "解析完了";
+        statusDot.className = "h-2 w-2 rounded-full bg-green-500";
+
+        if (data.literal_translation) {
+          runTypingEffect(data.literal_translation, literalTranslationText, 30);
+        }
+        if (data.context_translation) {
+          runTypingEffect(data.context_translation, contextTranslationText, 30);
+        }
+        if (data.explained_translation) {
+          runTypingEffect(data.explained_translation, explainedTranslationText, 30);
+        }
+
+        startBtn.disabled = false;
+      } catch (error) {
+        loadingIndicator.classList.add('hidden');
+        statusText.innerText = "エラー発生";
+        statusDot.className = "h-2 w-2 rounded-full bg-red-500";
+        literalTranslationText.innerText = "エラー";
+        contextTranslationText.innerText = "エラー";
+        explainedTranslationText.innerText = "通信エラーが発生しました。";
+        startBtn.disabled = false;
+      }
+    });
+
+    window.addEventListener('DOMContentLoaded', initWebcam);
+  </script>
+</body>
+</html>
